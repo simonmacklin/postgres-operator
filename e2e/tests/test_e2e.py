@@ -1454,12 +1454,17 @@ class EndToEndTestCase(unittest.TestCase):
         }
 
         k8s.update_config(patch_toleration_config, step="allow tainted nodes")
+        self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"},
+                    "Operator does not get in sync")
 
         self.eventuallyEqual(lambda: k8s.count_running_pods(), 2, "No 2 pods running")
         self.eventuallyEqual(lambda: len(k8s.get_patroni_running_members("acid-minimal-cluster-0")), 2, "Postgres status did not enter running")
 
         # toggle pod anti affinity to move replica away from master node
         nm, new_replica_nodes = k8s.get_cluster_nodes()
+        self.assertNotEqual(master_nodes, [])
+        self.assertNotEqual(replica_nodes, [])
+
         new_master_node = nm[0]
         self.assert_distributed_pods(new_master_node, new_replica_nodes, cluster_label)
 
@@ -1608,6 +1613,7 @@ class EndToEndTestCase(unittest.TestCase):
             }
         }
         k8s.update_config(patch_enable_antiaffinity, "enable antiaffinity")
+        self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"}, "Operator does not get in sync")
         self.assert_failover(master_node, len(replica_nodes), failover_targets, cluster_label)
 
         # now disable pod anti affintiy again which will cause yet another failover
