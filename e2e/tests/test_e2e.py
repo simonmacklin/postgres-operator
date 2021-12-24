@@ -974,7 +974,6 @@ class EndToEndTestCase(unittest.TestCase):
             raise
 
     @timeout_decorator.timeout(TEST_TIMEOUT_SEC)
-    @unittest.skip("Skipping this test until fixed")
     def test_node_readiness_label(self):
         '''
            Remove node readiness label from master node. This must cause a failover.
@@ -986,9 +985,12 @@ class EndToEndTestCase(unittest.TestCase):
 
         try:
             # get nodes of master and replica(s) (expected target of new master)
-            current_master_node, current_replica_nodes = k8s.get_pg_nodes(cluster_label)
+            master_nodes, replica_nodes = k8s.get_cluster_nodes()
+            self.assertNotEqual(master_nodes, [])
+            self.assertNotEqual(replica_nodes, [])
+
             num_replicas = len(current_replica_nodes)
-            failover_targets = self.get_failover_targets(current_master_node, current_replica_nodes)
+            failover_targets = self.get_failover_targets(master_nodes[0], replica_nodes)
 
             # add node_readiness_label to potential failover nodes
             patch_readiness_label = {
@@ -998,7 +1000,6 @@ class EndToEndTestCase(unittest.TestCase):
                     }
                 }
             }
-            self.assertTrue(len(failover_targets) > 0, "No failover targets available")
             for failover_target in failover_targets:
                 k8s.api.core_v1.patch_node(failover_target, patch_readiness_label)
 
@@ -1009,14 +1010,17 @@ class EndToEndTestCase(unittest.TestCase):
                 }
             }
             k8s.update_config(patch_readiness_label_config, "setting readiness label")
-            new_master_node, new_replica_nodes = self.assert_failover(
-                current_master_node, num_replicas, failover_targets, cluster_label)
+            self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"}, "Operator does not get in sync")
+
+            # node affinity change should cause replica to relocate from replica node to master node due to node affinity requirement
+            k8s.wait_for_pod_failover(failover_targets, 'spilo-role=master,' + cluster_label)
+            k8s.wait_for_pod_start('spilo-role=replica,' + cluster_label)
 
             # patch also node where master ran before
-            k8s.api.core_v1.patch_node(current_master_node, patch_readiness_label)
+            k8s.api.core_v1.patch_node(master_nodes[0], patch_readiness_label)
 
             # toggle pod anti affinity to move replica away from master node
-            self.eventuallyTrue(lambda: self.assert_distributed_pods(new_master_node, new_replica_nodes, cluster_label), "Pods are redistributed")
+            self.eventuallyTrue(lambda: self.assert_distributed_pods(master_nodes), "Pods are redistributed")
 
         except timeout_decorator.TimeoutError:
             print('Operator log: {}'.format(k8s.get_operator_log()))
@@ -1426,7 +1430,6 @@ class EndToEndTestCase(unittest.TestCase):
 
         # get nodes of master and replica(s) (expected target of new master)
         master_nodes, replica_nodes = k8s.get_cluster_nodes()
-
         self.assertNotEqual(master_nodes, [])
         self.assertNotEqual(replica_nodes, [])
 
@@ -1441,10 +1444,7 @@ class EndToEndTestCase(unittest.TestCase):
                 ]
             }
         }
-
         k8s.api.core_v1.patch_node(master_nodes[0], body)
-        self.eventuallyTrue(lambda: k8s.get_cluster_nodes()[0], replica_nodes)
-        self.assertNotEqual(lambda: k8s.get_cluster_nodes()[0], master_nodes)
 
         # add toleration to pods
         patch_toleration_config = {
@@ -1460,14 +1460,8 @@ class EndToEndTestCase(unittest.TestCase):
         self.eventuallyEqual(lambda: k8s.count_running_pods(), 2, "No 2 pods running")
         self.eventuallyEqual(lambda: len(k8s.get_patroni_running_members("acid-minimal-cluster-0")), 2, "Postgres status did not enter running")
 
-        # TODO: skipping this part for now since this is the last test
         # toggle pod anti affinity to move replica away from master node
-        # nm, new_replica_nodes = k8s.get_cluster_nodes()
-        # self.assertNotEqual(master_nodes, [])
-        # self.assertNotEqual(replica_nodes, [])
-
-        # new_master_node = nm[0]
-        # self.assert_distributed_pods(new_master_node, new_replica_nodes, cluster_label)
+        self.assert_distributed_pods(replica_nodes)
 
     @timeout_decorator.timeout(TEST_TIMEOUT_SEC)
     def test_zz_cluster_deletion(self):
@@ -1570,23 +1564,6 @@ class EndToEndTestCase(unittest.TestCase):
 
         return failover_targets
 
-    def assert_failover(self, current_master_node, num_replicas, failover_targets, cluster_label):
-        '''
-           Check if master is failing over. The replica should move first to be the switchover target
-        '''
-        k8s = self.k8s
-        k8s.wait_for_pod_failover(failover_targets, 'spilo-role=master,' + cluster_label)
-        k8s.wait_for_pod_start('spilo-role=replica,' + cluster_label)
-
-        new_master_node, new_replica_nodes = k8s.get_pg_nodes(cluster_label)
-        self.assertNotEqual(current_master_node, new_master_node,
-                            "Master on {} did not fail over to one of {}".format(current_master_node, failover_targets))
-        self.assertEqual(num_replicas, len(new_replica_nodes),
-                         "Expected {} replicas, found {}".format(num_replicas, len(new_replica_nodes)))
-        self.assert_master_is_unique()
-
-        return new_master_node, new_replica_nodes
-
     def assert_master_is_unique(self, namespace='default', clusterName="acid-minimal-cluster"):
         '''
            Check that there is a single pod in the k8s cluster with the label "spilo-role=master"
@@ -1598,14 +1575,13 @@ class EndToEndTestCase(unittest.TestCase):
         num_of_master_pods = k8s.count_pods_with_label(labels, namespace)
         self.assertEqual(num_of_master_pods, 1, "Expected 1 master pod, found {}".format(num_of_master_pods))
 
-    def assert_distributed_pods(self, master_node, replica_nodes, cluster_label):
+    def assert_distributed_pods(self, target_nodes, cluster_label):
         '''
            Other tests can lead to the situation that master and replica are on the same node.
            Toggle pod anti affinty to distribute pods accross nodes (replica in particular).
         '''
         k8s = self.k8s
         cluster_label = 'application=spilo,cluster-name=acid-minimal-cluster'
-        failover_targets = self.get_failover_targets(master_node, replica_nodes)
 
         # enable pod anti affintiy in config map which should trigger movement of replica
         patch_enable_antiaffinity = {
@@ -1615,7 +1591,9 @@ class EndToEndTestCase(unittest.TestCase):
         }
         k8s.update_config(patch_enable_antiaffinity, "enable antiaffinity")
         self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"}, "Operator does not get in sync")
-        self.assert_failover(master_node, len(replica_nodes), failover_targets, cluster_label)
+
+        k8s.wait_for_pod_failover(target_nodes, 'spilo-role=replica,' + cluster_label)
+        k8s.wait_for_pod_start('spilo-role=replica,' + cluster_label)
 
         # now disable pod anti affintiy again which will cause yet another failover
         patch_disable_antiaffinity = {
@@ -1624,8 +1602,11 @@ class EndToEndTestCase(unittest.TestCase):
             }
         }
         k8s.update_config(patch_disable_antiaffinity, "disable antiaffinity")
+        self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"}, "Operator does not get in sync")
+        
         k8s.wait_for_pod_start('spilo-role=master,' + cluster_label)
         k8s.wait_for_pod_start('spilo-role=replica,' + cluster_label)
+
         return True
 
     def list_databases(self, pod_name):
