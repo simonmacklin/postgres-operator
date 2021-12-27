@@ -973,7 +973,7 @@ class EndToEndTestCase(unittest.TestCase):
             raise
 
     @timeout_decorator.timeout(TEST_TIMEOUT_SEC)
-    def test_aaa_node_readiness_label(self):
+    def test_node_readiness_label(self):
         '''
            Remove node readiness label from master node. This must cause a failover.
         '''
@@ -1417,7 +1417,7 @@ class EndToEndTestCase(unittest.TestCase):
         self.eventuallyTrue(lambda: k8s.check_statefulset_annotations(cluster_label, annotations), "Annotations missing")
 
     @timeout_decorator.timeout(TEST_TIMEOUT_SEC)
-    def test_taint_based_eviction(self):
+    def test_aaa_taint_based_eviction(self):
         '''
            Add taint "postgres=:NoExecute" to node with master. This must cause a failover.
         '''
