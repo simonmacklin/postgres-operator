@@ -973,7 +973,7 @@ class EndToEndTestCase(unittest.TestCase):
             raise
 
     @timeout_decorator.timeout(TEST_TIMEOUT_SEC)
-    def test_node_readiness_label(self):
+    def test_aaa_node_readiness_label(self):
         '''
            Remove node readiness label from master node. This must cause a failover.
         '''
