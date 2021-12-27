@@ -1018,12 +1018,13 @@ class EndToEndTestCase(unittest.TestCase):
             # patch also node where master ran before
             k8s.api.core_v1.patch_node(master_nodes[0], patch_readiness_label)
 
-            # toggle pod anti affinity to move replica away from master node
-            self.eventuallyTrue(lambda: self.assert_distributed_pods(master_nodes), "Pods are redistributed")
-
         except timeout_decorator.TimeoutError:
             print('Operator log: {}'.format(k8s.get_operator_log()))
             raise
+
+        # toggle pod anti affinity to move replica away from master node
+        self.eventuallyTrue(lambda: self.assert_distributed_pods(master_nodes), "Pods are redistributed")
+
 
     @timeout_decorator.timeout(TEST_TIMEOUT_SEC)
     def test_overwrite_pooler_deployment(self):
@@ -1452,12 +1453,17 @@ class EndToEndTestCase(unittest.TestCase):
             }
         }
 
-        k8s.update_config(patch_toleration_config, step="allow tainted nodes")
-        self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"},
-                    "Operator does not get in sync")
+        try:
+            k8s.update_config(patch_toleration_config, step="allow tainted nodes")
+            self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"},
+                        "Operator does not get in sync")
 
-        self.eventuallyEqual(lambda: k8s.count_running_pods(), 2, "No 2 pods running")
-        self.eventuallyEqual(lambda: len(k8s.get_patroni_running_members("acid-minimal-cluster-0")), 2, "Postgres status did not enter running")
+            self.eventuallyEqual(lambda: k8s.count_running_pods(), 2, "No 2 pods running")
+            self.eventuallyEqual(lambda: len(k8s.get_patroni_running_members("acid-minimal-cluster-0")), 2, "Postgres status did not enter running")
+
+        except timeout_decorator.TimeoutError:
+            print('Operator log: {}'.format(k8s.get_operator_log()))
+            raise
 
         # toggle pod anti affinity to move replica away from master node
         self.assert_distributed_pods(replica_nodes)
@@ -1574,6 +1580,7 @@ class EndToEndTestCase(unittest.TestCase):
         num_of_master_pods = k8s.count_pods_with_label(labels, namespace)
         self.assertEqual(num_of_master_pods, 1, "Expected 1 master pod, found {}".format(num_of_master_pods))
 
+    @timeout_decorator.timeout(TEST_TIMEOUT_SEC)
     def assert_distributed_pods(self, target_nodes, cluster_labels='cluster-name=acid-minimal-cluster'):
         '''
            Other tests can lead to the situation that master and replica are on the same node.
@@ -1587,23 +1594,29 @@ class EndToEndTestCase(unittest.TestCase):
                 "enable_pod_antiaffinity": "true"
             }
         }
-        k8s.update_config(patch_enable_antiaffinity, "enable antiaffinity")
-        self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"}, "Operator does not get in sync")
 
-        k8s.wait_for_pod_failover(target_nodes, 'spilo-role=replica,' + cluster_labels)
-        k8s.wait_for_pod_start('spilo-role=replica,' + cluster_labels)
+        try:
+            k8s.update_config(patch_enable_antiaffinity, "enable antiaffinity")
+            self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"}, "Operator does not get in sync")
 
-        # now disable pod anti affintiy again which will cause yet another failover
-        patch_disable_antiaffinity = {
-            "data": {
-                "enable_pod_antiaffinity": "false"
+            k8s.wait_for_pod_failover(target_nodes, 'spilo-role=replica,' + cluster_labels)
+            k8s.wait_for_pod_start('spilo-role=replica,' + cluster_labels)
+
+            # now disable pod anti affintiy again which will cause yet another failover
+            patch_disable_antiaffinity = {
+                "data": {
+                    "enable_pod_antiaffinity": "false"
+                }
             }
-        }
-        k8s.update_config(patch_disable_antiaffinity, "disable antiaffinity")
-        self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"}, "Operator does not get in sync")
-        
-        k8s.wait_for_pod_start('spilo-role=master,' + cluster_labels)
-        k8s.wait_for_pod_start('spilo-role=replica,' + cluster_labels)
+            k8s.update_config(patch_disable_antiaffinity, "disable antiaffinity")
+            self.eventuallyEqual(lambda: k8s.get_operator_state(), {"0": "idle"}, "Operator does not get in sync")
+            
+            k8s.wait_for_pod_start('spilo-role=master,' + cluster_labels)
+            k8s.wait_for_pod_start('spilo-role=replica,' + cluster_labels)
+
+        except timeout_decorator.TimeoutError:
+            print('Operator log: {}'.format(k8s.get_operator_log()))
+            raise
 
         return True
 
