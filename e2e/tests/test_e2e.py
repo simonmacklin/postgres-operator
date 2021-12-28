@@ -935,6 +935,9 @@ class EndToEndTestCase(unittest.TestCase):
             # node affinity change should cause replica to relocate from replica node to master node due to node affinity requirement
             k8s.wait_for_pod_failover(master_nodes, 'spilo-role=replica,' + cluster_label)
             k8s.wait_for_pod_start('spilo-role=replica,' + cluster_label)
+            # master pod needs to be replaced as well to finish the rolling update
+            k8s.wait_for_pod_failover(master_nodes, 'spilo-role=master,' + cluster_label)
+            k8s.wait_for_pod_start('spilo-role=replica,' + cluster_label)
 
             podsList = k8s.api.core_v1.list_namespaced_pod('default', label_selector=cluster_label)
             for pod in podsList.items:
