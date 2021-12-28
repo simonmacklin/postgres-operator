@@ -982,15 +982,19 @@ class EndToEndTestCase(unittest.TestCase):
         readiness_label = 'lifecycle-status'
         readiness_value = 'ready'
 
+        # verify we are in good state from potential previous tests
+        self.eventuallyEqual(lambda: k8s.count_running_pods(), 2, "No 2 pods running")
+        self.eventuallyEqual(lambda: len(k8s.get_patroni_running_members("acid-minimal-cluster-0")), 2, "Postgres status did not enter running")
+
+        # get nodes of master and replica(s) (expected target of new master)
+        master_nodes, replica_nodes = k8s.get_cluster_nodes()
+        self.assertNotEqual(master_nodes, [])
+        self.assertNotEqual(replica_nodes, [])
+
+        num_replicas = len(replica_nodes)
+        failover_targets = self.get_failover_targets(master_nodes[0], replica_nodes)
+
         try:
-            # get nodes of master and replica(s) (expected target of new master)
-            master_nodes, replica_nodes = k8s.get_cluster_nodes()
-            self.assertNotEqual(master_nodes, [])
-            self.assertNotEqual(replica_nodes, [])
-
-            num_replicas = len(replica_nodes)
-            failover_targets = self.get_failover_targets(master_nodes[0], replica_nodes)
-
             # add node_readiness_label to potential failover nodes
             patch_readiness_label = {
                 "metadata": {
